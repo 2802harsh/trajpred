@@ -1,0 +1,20 @@
+data/
+output/
+.DS_Store
+backup/
+
+# profiling
+*.prof
+*_trace.json
+
+# Python
+venv*/
+*.egg-info
+__pycache__
+.pytest_cache/
+dist/
+build/
+.mypy_cache
+
+.cache
+.idea
