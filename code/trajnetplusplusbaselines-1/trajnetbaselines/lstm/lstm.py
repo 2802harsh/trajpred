@@ -68,7 +68,6 @@ class LSTM(torch.nn.Module):
         self.embedding_dim = embedding_dim
         self.pool = pool
         self.pool_to_input = pool_to_input
-
         ## Location
         scale = 4.0
         self.input_embedding = InputEmbedding(2, self.embedding_dim, scale)
@@ -236,9 +235,11 @@ class LSTM(torch.nn.Module):
         # list of predictions
         normals = []  # predicted normal parameters for both phases
         positions = []  # true (during obs phase) and predicted positions
+        velocities = []
 
         if len(observed) == 2:
             positions = [observed[-1]]
+            velocities = [observed[1] - observed[0]]
 
         # encoder
         if self.intent_pool:
@@ -246,36 +247,81 @@ class LSTM(torch.nn.Module):
         else:
           obs_first = None
         for obs1, obs2 in zip(observed[:-1], observed[1:]):
+            track_mask = (torch.isnan(obs1[:, 0]) + torch.isnan(obs2[:, 0])) == 0
+            print(obs1.size(), obs2.size())
+            v1 = obs2 - obs1
+            v1 = v1[track_mask]
+            print(v1.pow(2).sum(0).size())
+            v1_mag = v1.pow(2).sum(1).sum()/v1.size()[0]
+            velocities.append(v1_mag)
             ##LSTM Step
             hidden_cell_state, normal = self.step(self.encoder, hidden_cell_state, obs1, obs2, goals, batch_split, obs_first)
             # print("HERE")
             # print(hidden_cell_state[0].size)
             # concat predictions
             normals.append(normal)
+            # velocities.append(normal[:, :2])
             positions.append(obs2 + normal[:, :2])  # no sampling, just mean
+        # print("VELOCITIES", velocities)
+        vel = torch.stack(velocities)
+        # print("VEL",vel)
+        ot_v_np = vel.detach().numpy()
+        # print("ot_v_np", ot_v_np)
+        vmax = np.max(ot_v_np)
+        vmin = np.min(ot_v_np)
+        # print("VMIN", vmin)
+        # print("VMAX", vmax)
+
 
         # initialize predictions with last position to form velocity. DEEP COPY !!!
         prediction_truth = copy.deepcopy(list(itertools.chain.from_iterable(
             (observed[-1:], prediction_truth)
         )))
+        vt = []
 
         # decoder, predictions
+        positions_tmp = [positions[-2].detach(),positions[-1].detach()]
         for obs1, obs2 in zip(prediction_truth[:-1], prediction_truth[1:]):
             if obs1 is None:
-                obs1 = positions[-2].detach()  # DETACH!!!
+                obs1 = positions_tmp[-2].detach()  # DETACH!!!
             else:
                 for primary_id in batch_split[:-1]:
-                    obs1[primary_id] = positions[-2][primary_id].detach()  # DETACH!!!
+                    obs1[primary_id] = positions_tmp[-2][primary_id].detach()  # DETACH!!!
             if obs2 is None:
-                obs2 = positions[-1].detach()
+                obs2 = positions_tmp[-1].detach()
             else:
                 for primary_id in batch_split[:-1]:
-                    obs2[primary_id] = positions[-1][primary_id].detach()  # DETACH!!!
+                    obs2[primary_id] = positions_tmp[-1][primary_id].detach()  # DETACH!!!
             hidden_cell_state, normal = self.step(self.decoder, hidden_cell_state, obs1, obs2, goals, batch_split, obs_first)
 
             # concat predictions
             normals.append(normal)
-            positions.append(obs2 + normal[:, :2])  # no sampling, just mean
+            vt.append(normal[:,:2])
+            positions_tmp.append(obs2 + normal[:, :2])  # no sampling, just mean
+        vt_tensor = torch.stack(vt)
+        # print("VT_TENSOR",vt_tensor)
+        vt_sig = torch.sigmoid(vt_tensor)
+        # print("VT_SIG",vt_sig)
+        vt_final = vmin + vt_sig*(vmax-vmin)
+        # print("VT_FIN",vmin, vmax, vt_final)
+        vel_trajectories = list(torch.unbind(vt_final))
+        ind = 0
+        for obs1, obs2 in zip(prediction_truth[:-1], prediction_truth[1:]):
+
+            if obs1 is None:
+                obs1 = positions_tmp[-2].detach()  # DETACH!!!
+            else:
+                for primary_id in batch_split[:-1]:
+                    obs1[primary_id] = positions_tmp[-2][primary_id].detach()  # DETACH!!!
+            if obs2 is None:
+                obs2 = positions_tmp[-1].detach()
+            else:
+                for primary_id in batch_split[:-1]:
+                    obs2[primary_id] = positions_tmp[-1][primary_id].detach()  # DETACH!!!
+            # print("OBS2",obs2)
+            # print("vel", vel_trajectories[ind])
+            positions.append(obs2+vel_trajectories[ind])
+            ind = ind + 1
 
         # Pred_scene: Tensor [seq_length, num_tracks, 2]
         #    Absolute positions of all pedestrians
