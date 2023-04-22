@@ -252,7 +252,7 @@ class LSTM(torch.nn.Module):
             v1 = obs2 - obs1
             v1 = v1[track_mask]
             print(v1.pow(2).sum(0).size())
-            v1_mag = v1.pow(2).sum(1).sum()/v1.size()[0]
+            v1_mag = v1.pow(2).sum(1).sqrt().sum()/v1.size()[0]
             velocities.append(v1_mag)
             ##LSTM Step
             hidden_cell_state, normal = self.step(self.encoder, hidden_cell_state, obs1, obs2, goals, batch_split, obs_first)
